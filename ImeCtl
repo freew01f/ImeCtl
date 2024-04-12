@@ -1,0 +1,128 @@
+#include <Windows.h>
+#include <iostream>
+#include <string>
+
+std::wstring GetImeFileOrLayoutText(const std::wstring& localeID) {
+    std::wstring result;
+
+    // 打开键盘布局注册表项
+    HKEY hKey;
+    if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, (L"SYSTEM\\CurrentControlSet\\Control\\Keyboard Layouts\\" + localeID).c_str(), 0, KEY_READ, &hKey) != ERROR_SUCCESS) {
+        std::cerr << "Failed to open registry key." << std::endl;
+        return L"";
+    }
+
+    // 查询 Ime File
+    WCHAR imeFile[MAX_PATH];
+    DWORD imeFileSize = sizeof(imeFile);
+    if (RegGetValue(hKey, NULL, L"Ime File", RRF_RT_REG_SZ, NULL, imeFile, &imeFileSize) == ERROR_SUCCESS) {
+        result = imeFile;
+    } else {
+        // 查询 Layout Text
+        WCHAR layoutText[256];
+        DWORD layoutTextSize = sizeof(layoutText);
+        if (RegGetValue(hKey, NULL, L"Layout Text", RRF_RT_REG_SZ, NULL, layoutText, &layoutTextSize) == ERROR_SUCCESS) {
+            result = layoutText;
+        }
+    }
+
+    // 关闭注册表项
+    RegCloseKey(hKey);
+
+    return result;
+}
+
+void ListLocaleIDs() {
+    // 打开键盘布局注册表项
+    HKEY hKey;
+    if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Keyboard Layouts", 0, KEY_READ, &hKey) != ERROR_SUCCESS) {
+        std::cerr << "Failed to open registry key." << std::endl;
+        return;
+    }
+
+    // 枚举注册表中的键名
+    DWORD index = 0;
+    WCHAR subkeyName[256];
+    DWORD subkeyNameSize = sizeof(subkeyName);
+    while (RegEnumKeyEx(hKey, index++, subkeyName, &subkeyNameSize, NULL, NULL, NULL, NULL) == ERROR_SUCCESS) {
+        // 如果键名以 "804" 结尾，输出该 Locale ID 和对应的 Ime File 或 Layout Text
+        std::wstring localeID = subkeyName;
+        if (localeID.substr(localeID.length() - 3) == L"804") {
+            std::wcout << localeID << L", ";
+            std::wstring result = GetImeFileOrLayoutText(localeID);
+            if (!result.empty()) {
+                std::wcout << result;
+            } else {
+                std::wcout << L"No Ime File or Layout Text found";
+            }
+            std::wcout << L" | ";
+        }
+        subkeyNameSize = sizeof(subkeyName);
+    }
+
+    // 关闭注册表项
+    RegCloseKey(hKey);
+}
+
+void SwitchInputLocale(const std::wstring& localeID) {
+    // 获取当前活动窗口的句柄
+    HWND hwnd = GetForegroundWindow();
+    if (hwnd == NULL) {
+        std::cerr << "Failed to get the handle of the foreground window." << std::endl;
+        return;
+    }
+
+    // 获取当前活动窗口所属的进程ID
+    DWORD processID;
+    GetWindowThreadProcessId(hwnd, &processID);
+
+    // 打开进程
+    HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processID);
+    if (hProcess == NULL) {
+        std::cerr << "Failed to open the process." << std::endl;
+        return;
+    }
+
+    // 加载新的键盘布局
+    HKL newHkl = LoadKeyboardLayout(localeID.c_str(), KLF_ACTIVATE);
+    if (newHkl == NULL) {
+        std::cerr << "Failed to load the keyboard layout." << std::endl;
+        CloseHandle(hProcess);
+        return;
+    }
+
+    // 设置进程的输入法
+    if (!PostMessage(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)newHkl)) {
+        std::cerr << "Failed to post the input language change request message." << std::endl;
+    }
+
+    std::wcout << L"Switched to input locale ID: " << localeID << std::endl;
+
+    // 关闭进程
+    CloseHandle(hProcess);
+}
+
+int main(int argc, char* argv[]) {
+    if (argc < 2) {
+        // 如果没有参数，列出所有 Locale ID 结尾为 "804" 的输入法
+        ListLocaleIDs();
+    } else {
+        // 如果有参数，切换输入法
+        std::wstring localeID;
+        int length = MultiByteToWideChar(CP_ACP, 0, argv[1], -1, NULL, 0);
+        if (length > 0) {
+            wchar_t* wideCharBuffer = new wchar_t[length];
+            if (MultiByteToWideChar(CP_ACP, 0, argv[1], -1, wideCharBuffer, length)) {
+                localeID = wideCharBuffer;
+            }
+            delete[] wideCharBuffer;
+        }
+        if (!localeID.empty()) {
+            SwitchInputLocale(localeID);
+        } else {
+            std::cerr << "Failed to convert command line argument to wide string." << std::endl;
+        }
+    }
+
+    return 0;
+}
